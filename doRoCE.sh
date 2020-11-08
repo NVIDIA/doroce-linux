@@ -1,5 +1,5 @@
 #!/bin/bash
-VERSION=0.97
+VERSION=0.98
 # TODOs
 #- multi-port
 
@@ -15,6 +15,8 @@ tos_val=106
 gix_val=3
 mtu_val=""
 set_default=0
+trust="dscp"
+trust_val="2"
 inparams=$@
 
 function yn_question ()
@@ -208,6 +210,8 @@ if [ 1 -eq $set_default ] ; then
     lossless=0
     lossy=1
     tos_val=0
+    trust="pcp"
+    trust_val=1
 fi
 
 pfc_cmd_mask=$((1       << ($tos_val>>5)))
@@ -313,9 +317,9 @@ for dev in ${device_list[@]} ; do
                 mlnx_qos_pfc_mask+="$(( ($pfc_set_mask>>$i) & 0x1 ))"
                 if [ 7 -ne $i ] ; then mlnx_qos_pfc_mask+="," ; fi
             done
-            run_cmd mlnx_qos "mlnx_qos -i $netdev --trust=dscp --pfc=$mlnx_qos_pfc_mask"
+            run_cmd mlnx_qos "mlnx_qos -i $netdev --trust=$trust --pfc=$mlnx_qos_pfc_mask"
         else
-            run_cmd "Set trust DSCP" "$mlxreg_cmd -y -d $bdf --reg_name QPTS -i \"local_port=1\" --set \"trust_state=2\""
+            run_cmd "Set trust DSCP" "$mlxreg_cmd -y -d $bdf --reg_name QPTS -i \"local_port=1\" --set \"trust_state=$trust_val\""
             run_cmd "Set PFC" "$mlxreg_cmd -y -d $bdf --reg_name PFCC -i \"local_port=1,pnat=0,dcbx_operation_type=0\" --set \"prio_mask_rx=${pfc_cmd_mask},prio_mask_tx=${pfc_cmd_mask},pfctx=${pfc_set_mask},pfcrx=${pfc_set_mask},pprx=0,pptx=0\""
         fi
         
