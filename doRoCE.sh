@@ -14,6 +14,7 @@ y_n=""
 tos_val=106
 gix_val=3
 mtu_val=""
+set_default=0
 inparams=$@
 
 function yn_question ()
@@ -51,7 +52,7 @@ function run_cmd ()
         echo "[E] Failed to run $cmd_name (err $err)"
         echo "[E] Failed command output:"
         echo "$cmd_line" ; echo "$care"
-        return 1
+        return $err
     fi
     if [ 1 -eq $verbose ] ; then 
         echo "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
@@ -132,6 +133,7 @@ do
             \echo "      -v / --verbose          - print commands and outputs"
             \echo "      -y / --yes              - ignore errors and proceed with what's available (default - ask)"
             \echo "      -n / --no               - exit on any missing component"
+            \echo "      -b / --back_to_def      - restore OOB config (note - will not restore MTU, please set it manually)"
             \echo ""
             \echo "  List of configurations performed:"
             \echo "  - Installs the script (with selected parameters) to driver boot process"
@@ -155,6 +157,7 @@ do
         "-v"|"--verbose")       verbose=1;;
         "-y"|"--yes")           y_n="y";;
         "-n"|"--no")            y_n="n";;
+        "-b"|"--back_to_def")   set_default=1;;
         -d)                     p_arg=${arg##"-"} ;;
         -t)                     p_arg=${arg##"-"} ;;
         -m)                     p_arg=${arg##"-"} ;;
@@ -178,17 +181,20 @@ else
 fi
 
 nccl_conf_path="/etc/nccl.conf"
-if [ 1 -eq $uninst ] ; then
-    echo "[I] Removing script from boot process"
-    if [ -f $psh_path ] ; then
-        run_cmd "Clear post-start hook" "sed -i -- '/doRoCE/ d' $psh_path"
-    fi
+if [ 1 -eq $uninst ] || [ 1 -eq $set_default ] ; then
+    echo "[I] Removing NCCL conf hook"
     if [ -f $nccl_conf_path ] ; then
         run_cmd "Clear NCCL conf DSCP" "\sed -i -- '/doRoCE\|NCCL_IB_TC\|NCCL_IB_GID_INDEX/I d' $nccl_conf_path"
     fi
-    echo "[I] Removing script from /usr/bin"
-    run_cmd "Remove script from /usr/bin" "rm -f /usr/bin/doRoCE.sh"
-    exit 0
+    if [ 1 -eq $uninst ] ; then
+        echo "[I] Removing script from boot process"
+        if [ -f $psh_path ] ; then
+            run_cmd "Clear post-start hook" "sed -i -- '/doRoCE/ d' $psh_path"
+        fi
+        echo "[I] Removing script from /usr/bin"
+        run_cmd "Remove script from /usr/bin" "rm -f /usr/bin/doRoCE.sh"
+        exit 0
+    fi
 fi
 
 if [ ! -d /sys/bus/pci/drivers/mlx5_core/ ] ; then
@@ -197,6 +203,13 @@ if [ ! -d /sys/bus/pci/drivers/mlx5_core/ ] ; then
 fi
 
 if [ 1 -eq $lossless ] && [ 1 -eq $lossy ] ; then echo "[E] Lossy and lossless can't be configured at the same time, exiting" ; exit 7 ; fi
+
+if [ 1 -eq $set_default ] ; then
+    lossless=0
+    lossy=1
+    tos_val=0
+fi
+
 pfc_cmd_mask=$((1       << ($tos_val>>5)))
 pfc_set_mask=$((!$lossy << ($tos_val>>5)))
 
@@ -256,7 +269,7 @@ if [ 0 -eq $run_once ] ; then
 
 fi
 
-if [ "$PARENT_COMMAND" != "$psh_caller" ] ; then
+if [ "$PARENT_COMMAND" != "$psh_caller" ] && [ 1 -ne $set_default ] ; then
     # Set nccl.conf
     if [ 1 -eq $debug ] ; then echo "[D] setting NCCL conf" ; fi
     if [ -f $nccl_conf_path ] ; then 
@@ -326,7 +339,12 @@ for dev in ${device_list[@]} ; do
     
     # Set RDMA-CM
     set_cm_tos $dev
-    
+
+    # if back_to_def - set global pause
+    if [ 1 -eq $set_default ] ; then
+        care=`run_cmd "Back to default - set global pause" "ethtool -A $netdev rx on tx on"`
+        if [ 1 -eq $? ] ; then echo $care ; fi
+    fi
     echo "[I] Device $dev - done"
 done
 
