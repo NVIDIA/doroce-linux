@@ -324,7 +324,7 @@ for dev in ${device_list[@]} ; do
         fi
         
         # Configure lossy accelarations
-        accl_val=$((1-$lossless))
+        accl_val=$((1-($lossless || $set_default)))
         run_cmd "Set lossy optimizations" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"roce_adp_retrans_en=$accl_val,roce_tx_window_en=$accl_val,roce_slow_restart_en=$accl_val\""
     fi
     # Set MTU
