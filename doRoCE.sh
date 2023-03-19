@@ -27,6 +27,9 @@ uninst=0
 run_once=0
 lossless=0
 lossy=0
+rttcc=0
+selective_repeat=0
+adaptive_routing=0
 debug=0
 verbose=0
 device_list=()
@@ -38,6 +41,7 @@ set_default=0
 trust="dscp"
 trust_val="2"
 inparams=$@
+specific_devices_selected=0
 
 function yn_question ()
 {
@@ -151,6 +155,13 @@ do
             \echo "      -l / --lossless_opt     - assume lossless configuration for performance optimizations (default: $lossless)"
             \echo "                                use this option if you configured a Mellanox-NVIDIA switch with \"roce\" command"
             \echo "      -s / --lossy_buf        - disable PFC, use single larger buffer for all traffic types (default: $lossy)"
+            \echo "      -c / --rttcc            - force the usage of ZTR-RTTCC congestion control (default: nvconfig & ECE synchronization)"
+            \echo "                                nvconfig parameter: ROCE_CC_LEGACY_DCQCN=False"
+            \echo "                                this configuration is required on both ports for dual port NIC"
+            \echo "      -r / --selective_repeat - force the usage of Selective Repeat retransmission mechanism (default: nvconfig & ECE synchronization)"
+            \echo "                                nvconfig parameter: RDMA_SELECTIVE_REPEAT_EN"
+            \echo "      -o / --adaptive_routing - force the usage of Adaptive Routing Out-of-Order handling (default: nvconfig & ECE synchronization)"
+            \echo "                                nvconfig parameter: ROCE_ADAPTIVE_ROUTING_EN"
             \echo "      -u / --debug            - add debug prints"
             \echo "      -v / --verbose          - print commands and outputs"
             \echo "      -y / --yes              - ignore errors and proceed with what's available (default - ask)"
@@ -175,6 +186,9 @@ do
         "--run_once")           run_once=1;;
         "-l"|"--lossless_opt")  lossless=1;;
         "-s"|"--lossy_buf")     lossy=1;;
+        "-c"|"--rttcc")         rttcc=1;;
+        "-r"|"--selective_repeat")         selective_repeat=1;;
+        "-o"|"--adaptive_routing")         adaptive_routing=1;;
         "-u"|"--debug")         debug=1;;
         "-v"|"--verbose")       verbose=1;;
         "-y"|"--yes")           y_n="y";;
@@ -226,9 +240,14 @@ fi
 
 if [ 1 -eq $lossless ] && [ 1 -eq $lossy ] ; then echo "[E] Lossy and lossless can't be configured at the same time, exiting" ; exit 7 ; fi
 
+if [ 1 -eq $selective_repeat ] && [ 1 -eq $adaptive_routing ] ; then echo "[E] Selective Repeat and Adaptive Routing can't be configured at the same time, exiting" ; exit 7 ; fi
+
 if [ 1 -eq $set_default ] ; then
     lossless=0
     lossy=1
+    rttcc=0
+    selective_repeat=0
+    adaptive_routing=0
     tos_val=0
     trust="pcp"
     trust_val=1
@@ -254,7 +273,25 @@ else
     echo "# make"
     echo "# sudo make install"
     
-    yn_question_cont_wo "PFC, trust layer and lossy fabric accelarations"
+    yn_question_cont_wo "PFC, trust layer and lossy fabric accelerations"
+fi
+
+if [ 1 -eq $debug ] ; then echo "[D] checking for mlxconfig/mstconfig" ; fi
+mlxconfig_cmd=""
+if   (which mlxconfig >/dev/null 2>&1) || [ -f "/usr/bin/mlxconfig" ] ; then mlxconfig_cmd="mlxconfig"
+elif (which mstconfig >/dev/null 2>&1) || [ -f "/usr/bin/mstconfig" ] ; then mlxconfig_cmd="mstconfig"
+else
+    echo "[E] Could not find mlxconfig/mstconfig tool in \$PATH"
+    echo "to install: install MLNX_OFED, or:"
+    echo "    "
+    echo "# git clone https://github.com/Mellanox/mstflint.git"
+    echo "# cd mstflint"
+    echo "# ./autogen.sh"
+    echo "# ./configure --disable-inband --enable-adb-generic-tools"
+    echo "# make"
+    echo "# sudo make install"
+
+    yn_question_cont_wo "PFC, trust layer and lossy fabric accelerations"
 fi
 
 if [ 1 -eq $debug ] ; then echo "[D] checking for RDMA-CM configfs" ; fi
@@ -311,9 +348,11 @@ if [ -z "$device_list" ] ; then
     for dev in `\ls /sys/class/infiniband/` ; do
         device_list+=("$dev")
     done
+else
+    specific_devices_selected=1
 fi
-if [ 1 -eq $debug ] ; then echo "[I] Device list: ${device_list[@]}" ; fi
 
+if [ 1 -eq $debug ] ; then echo "[I] Device list: ${device_list[@]}" ; fi
 for dev in ${device_list[@]} ; do
     if [ 1 -eq $debug ] ; then echo "[D] Starting device $dev" ; fi
     
@@ -343,9 +382,70 @@ for dev in ${device_list[@]} ; do
             run_cmd "Set PFC" "$mlxreg_cmd -y -d $bdf --reg_name PFCC -i \"local_port=1,pnat=0,dcbx_operation_type=0\" --set \"prio_mask_rx=${pfc_cmd_mask},prio_mask_tx=${pfc_cmd_mask},pfctx=${pfc_set_mask},pfcrx=${pfc_set_mask},pprx=0,pptx=0\""
         fi
         
-        # Configure lossy accelarations
+        # Configure lossy accelerations
         accl_val=$((1-($lossless || $set_default)))
         run_cmd "Set lossy optimizations" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"roce_adp_retrans_en=$accl_val,roce_tx_window_en=$accl_val,roce_slow_restart_en=$accl_val\""
+
+        # Get device type; Activate the following based on minimum device level; ConnectX-6 Dx onwards
+        dev_fw_version=`\cat /sys/class/infiniband/${dev}/fw_ver`
+        dev_type=$(echo $dev_fw_version | cut -c -2)
+        ga_release_version=$(echo $dev_fw_version | cut -c 4-5)
+
+        # Set selective repeat
+        if [ 1 -eq $selective_repeat ] ; then
+            if ((22 > $dev_type)) ; then
+                echo "[I] Device $dev - does not support Selective Repeat, skipping"
+                continue
+            fi
+            accl_val=$((1-$set_default))
+            run_cmd "Set selective repeat" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"selective_repeat_forced_en=$accl_val,adaptive_routing_forced_en=$((1-$accl_val))\""
+        fi
+
+        # Set adaptive routing
+        if [ 1 -eq $adaptive_routing ] ; then
+            if ((22 > $dev_type)) ; then
+                echo "[I] Device $dev - does not support Adaptive Routing, skipping"
+                continue
+            fi
+            if [ 1 -eq $lossless ] ; then
+                echo "[I] Adaptive Routing is supported in lossless mode only, skipping"
+                continue
+            fi
+            accl_val=$((1-$set_default))
+            run_cmd "Set adaptive routing" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"adaptive_routing_forced_en=$accl_val,selective_repeat_forced_en=$((1-$accl_val))\""
+        fi
+
+        # Set ZTR-RTTCC
+        if [ 1 -eq $rttcc ] ; then
+            if ((22 > $dev_type)) ; then
+                echo "[I] Device $dev - does not support ZTR-RTTCC, skipping"
+                continue
+            fi
+
+            if ((37 > $ga_release_version)) ; then
+                echo "[I] Use a newer GA (37 and above) for the below to work properly, skipping"
+                continue
+            fi
+
+            # Configure ZTR-RTTCC congestion control
+            echo "[I] Configure ZTR-RTTCC congestion control"
+
+            if [[ "22" == "$dev_type" ]] ; then
+                echo "[I] Device $dev - is ConnectX-6 Dx, check if legacy DCQCN is enabled"
+                # verify device is NOT in legacy DCQCN congestion control mode
+                mlxconfig_out=$($mlxconfig_cmd -d $bdf q ROCE_CC_LEGACY_DCQCN | grep ROCE_CC_LEGACY_DCQCN)
+                if [[ $mlxconfig_out == *"True"* ]] ; then
+                    echo "[I] Device $dev - DCQCN congestion control in use, skipping"
+                    echo "[I] disable ROCE_CC_LEGACY_DCQCN with mlxconfig and reset the device"
+                    continue
+                fi
+            fi
+
+            run_cmd "Activate ZTR-RTTCC congestion control" "$mlxreg_cmd -y -d $bdf --reg_name PPCC --set \"cmd_type=2\" --indexes \"local_port=1,pnat=0,lp_msb=0,algo_slot=15,algo_param_index=0\""
+            if [ 1 -eq $specific_devices_selected ] ; then
+                echo "[I] Activating ZTR-RTTCC is required on both ports for dual port NIC!"
+            fi
+        fi
     fi
     # Set MTU
     if [ ! -z $mtu_val ] ; then
