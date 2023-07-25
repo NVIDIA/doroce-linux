@@ -29,7 +29,6 @@ lossless=0
 lossy=0
 rttcc=0
 selective_repeat=0
-adaptive_routing=0
 debug=0
 verbose=0
 device_list=()
@@ -160,8 +159,6 @@ do
             \echo "                                this configuration is required on both ports for dual port NIC"
             \echo "      -r / --selective_repeat - force the usage of Selective Repeat retransmission mechanism (default: nvconfig & ECE synchronization)"
             \echo "                                nvconfig parameter: RDMA_SELECTIVE_REPEAT_EN"
-            \echo "      -o / --adaptive_routing - force the usage of Adaptive Routing Out-of-Order handling (default: nvconfig & ECE synchronization)"
-            \echo "                                nvconfig parameter: ROCE_ADAPTIVE_ROUTING_EN"
             \echo "      -u / --debug            - add debug prints"
             \echo "      -v / --verbose          - print commands and outputs"
             \echo "      -y / --yes              - ignore errors and proceed with what's available (default - ask)"
@@ -188,7 +185,6 @@ do
         "-s"|"--lossy_buf")     lossy=1;;
         "-c"|"--rttcc")         rttcc=1;;
         "-r"|"--selective_repeat")         selective_repeat=1;;
-        "-o"|"--adaptive_routing")         adaptive_routing=1;;
         "-u"|"--debug")         debug=1;;
         "-v"|"--verbose")       verbose=1;;
         "-y"|"--yes")           y_n="y";;
@@ -240,14 +236,12 @@ fi
 
 if [ 1 -eq $lossless ] && [ 1 -eq $lossy ] ; then echo "[E] Lossy and lossless can't be configured at the same time, exiting" ; exit 7 ; fi
 
-if [ 1 -eq $selective_repeat ] && [ 1 -eq $adaptive_routing ] ; then echo "[E] Selective Repeat and Adaptive Routing can't be configured at the same time, exiting" ; exit 7 ; fi
 
 if [ 1 -eq $set_default ] ; then
     lossless=0
     lossy=1
     rttcc=0
     selective_repeat=0
-    adaptive_routing=0
     tos_val=0
     trust="pcp"
     trust_val=1
@@ -398,21 +392,7 @@ for dev in ${device_list[@]} ; do
                 continue
             fi
             accl_val=$((1-$set_default))
-            run_cmd "Set selective repeat" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"selective_repeat_forced_en=$accl_val,adaptive_routing_forced_en=$((1-$accl_val))\""
-        fi
-
-        # Set adaptive routing
-        if [ 1 -eq $adaptive_routing ] ; then
-            if ((22 > $dev_type)) ; then
-                echo "[I] Device $dev - does not support Adaptive Routing, skipping"
-                continue
-            fi
-            if [ 1 -eq $lossless ] ; then
-                echo "[I] Adaptive Routing is supported in lossless mode only, skipping"
-                continue
-            fi
-            accl_val=$((1-$set_default))
-            run_cmd "Set adaptive routing" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"adaptive_routing_forced_en=$accl_val,selective_repeat_forced_en=$((1-$accl_val))\""
+            run_cmd "Set selective repeat" "$mlxreg_cmd -y -d $bdf --reg_name ROCE_ACCL --set \"selective_repeat_forced_en=$accl_val,adaptive_routing_forced_en=0\""
         fi
 
         # Set ZTR-RTTCC
